@@ -1,84 +1,119 @@
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2");
 const multer = require("multer");
+const mongoose = require("mongoose");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+
+// Use MongoDB connection string from environment variables
+const mongoURI = "mongodb+srv://pj912970:lFhoreymwFDJe068@sms.d8y3p.mongodb.net/?retryWrites=true&w=majority&appName=sms";
+
+mongoose.connect(mongoURI)
+  .then(() => console.log('Connected to MongoDB Atlas'))
+  .catch(err => console.log('MongoDB connection error:', err));
+
+// Define a schema for student data
+const studentSchema = new mongoose.Schema({
+  rno: Number,
+  name: String,
+  marks: Number,
+  image: String, // This will store the file name/path
+});
+
+const Student = mongoose.model('Student', studentSchema);
+
+// Middleware for CORS
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-const con = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "abc123",
-  database: "sms18dec24",
-});
-
+// Multer setup for file upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "uploads/"); // Destination folder for uploads
+    const uploadPath = path.join(__dirname, 'uploads');
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique filename
+    const uniqueName = Date.now() + path.extname(file.originalname);
+    cb(null, uniqueName);
   },
 });
+
 const upload = multer({ storage });
 
-app.use("/uploads", express.static("uploads"));
-
+// Route to save student data
 app.post("/ss", upload.single("file"), (req, res) => {
-  if (!req.file || !req.body.rno || !req.body.name || !req.body.marks) {
-    return res.status(400).send("All fields are required.");
+  const { rno, name, marks } = req.body;
+  if (!rno || !name || !marks || !req.file) {
+    return res.status(400).send({ error: "All fields are required." });
   }
-  let data = [req.body.rno, req.body.name, req.body.marks, req.file.filename];
-  let sql = "INSERT INTO student (rno, name, marks, image) VALUES (?, ?, ?, ?)";
-  con.query(sql, data, (err, result) => {
-    if (err) {
-      console.error("Database Error:", err);
-      res.status(500).send(err);
-    } else {
-      res.send(result);
-    }
+
+  const newStudent = new Student({
+    rno: rno,
+    name: name,
+    marks: marks,
+    image: req.file.filename, // Store image filename
   });
+
+  newStudent.save()
+    .then((result) => res.send({ message: "Record created successfully", result }))
+    .catch((err) => {
+      console.error("Database Error:", err);
+      res.status(500).send({ error: "Database Error", details: err });
+    });
 });
 
+// GET route to fetch all student data
 app.get("/gs", (req, res) => {
-  let sql = "SELECT * FROM student";
-  con.query(sql, (err, result) => {
-    if (err) {
-      console.error("Database Error:", err);
-      res.status(500).send(err);
-    } else {
-      res.send(result);
-    }
-  });
+  Student.find()
+    .then((students) => {
+      res.json(students);  // Send all student records as JSON
+    })
+    .catch((err) => {
+      console.error("Error fetching students:", err);
+      res.status(500).send({ error: "Failed to fetch student data", details: err });
+    });
 });
 
-// Delete Student (DELETE /ds)
+// DELETE route to remove student and image
 app.delete("/ds", (req, res) => {
-  if (!req.body.rno || !req.body.image) {
-    return res.status(400).send("Rno and image are required.");
+  const { rno, image } = req.body;
+
+  if (!rno || !image) {
+    return res.status(400).send({ error: "Student roll number and image are required." });
   }
-  fs.unlink("./uploads/" + req.body.image, (err) => {
-    if (err) {
-      console.error("Error deleting file:", err);
-    }
-  });
-  let data = [req.body.rno];
-  let sql = "DELETE FROM student WHERE rno = ?";
-  con.query(sql, data, (err, result) => {
-    if (err) {
-      console.error("Database Error:", err);
-      res.status(500).send(err);
-    } else {
-      res.send(result);
-    }
-  });
+
+  // Delete student by roll number
+  Student.findOneAndDelete({ rno })
+    .then((deletedStudent) => {
+      if (!deletedStudent) {
+        return res.status(404).send({ error: "Student not found." });
+      }
+
+      // Delete the image file from the server
+      const imagePath = path.join(__dirname, 'uploads', image);
+      fs.unlink(imagePath, (err) => {
+        if (err) {
+          console.error("Error deleting image:", err);
+          return res.status(500).send({ error: "Error deleting image." });
+        }
+
+        res.send({ message: "Record and image deleted successfully." });
+      });
+    })
+    .catch((err) => {
+      console.error("Error deleting student:", err);
+      res.status(500).send({ error: "Failed to delete student.", details: err });
+    });
 });
+
+// Serve uploaded images statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Start server
-app.listen(9000, () => {
-  console.log("Server is ready at http://localhost:9000");
-});
+app.listen(9000, () => console.log("Server running at http://localhost:9000"));
